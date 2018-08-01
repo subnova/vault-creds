@@ -8,6 +8,7 @@ RUN cd $GOPATH/src/github.com/subnova/vault-creds && CGO_ENABLED=0 GOOS=linux GO
 
 FROM scratch
 
+COPY --from-build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=build /go/src/github.com/subnova/vault-creds/bin/vaultcreds /vaultcreds
 
 ENTRYPOINT ["/vaultcreds"]
