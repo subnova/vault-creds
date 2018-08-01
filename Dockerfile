@@ -3,8 +3,8 @@ FROM golang:alpine as build
 RUN apk update && \
     apk add make git ca-certificates
 
-ADD . /go/src/github.com/subnova/vault-creds
-RUN cd /go/src/github.com/subnova/vault-creds && make
+ADD . $GOPATH/src/github.com/subnova/vault-creds
+RUN cd $GOPATH/src/github.com/subnova/vault-creds && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 make
 
 FROM scratch
 
