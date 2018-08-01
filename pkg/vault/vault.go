@@ -20,7 +20,7 @@ var ErrPermissionDenied = errors.New("permission denied")
 var ErrLeaseNotFound = errors.New("lease not found or is not renewable")
 
 type CredentialsProvider interface {
-	Fetch() (*Credentials, error)
+	Fetch() (*api.Secret, error)
 }
 
 type CredentialsRenewer interface {
@@ -105,31 +105,25 @@ func NewLeaseManager(client *api.Client) CredentialsRenewer {
 	return &DefaultLeaseManager{client: client}
 }
 
-type DefaultCredentialsProvider struct {
+type DefaultSecretProvider struct {
 	client *api.Client
 	path   string
 }
 
-func NewCredentialsProvider(client *api.Client, secretPath string) *DefaultCredentialsProvider {
-	return &DefaultCredentialsProvider{client: client, path: secretPath}
+func NewSecretProvider(client *api.Client, secretPath string) *DefaultSecretProvider {
+	return &DefaultSecretProvider{client: client, path: secretPath}
 }
 
-func (c *DefaultCredentialsProvider) Fetch() (*Credentials, error) {
+func (c *DefaultSecretProvider) Fetch() (*api.Secret, error) {
 	log.Infof("requesting credentials")
 	secret, err := c.client.Logical().Read(c.path)
 	if err != nil {
 		return nil, err
 	}
 
-	log.WithFields(secretFields(secret)).Infof("succesfully retrieved credentials")
+	log.WithFields(secretFields(secret)).Infof("successfully retrieved credentials")
 
-	return &Credentials{secret.Data["username"].(string), secret.Data["password"].(string), secret}, nil
-}
-
-type Credentials struct {
-	Username string
-	Password string
-	Secret   *api.Secret
+	return secret, nil
 }
 
 type TLSConfig struct {

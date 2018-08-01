@@ -2,5 +2,5 @@ production:
   adapter: postgresql
   database: my_database
   host: mydbhost
-  username: {{ .Username }}
-  password: {{ .Password }}
+  username: {{ index .Data "username" }}
+  password: {{ index .Data "password" }}

@@ -1,22 +1,22 @@
 package main
 
 import (
-	"context"
 	"io/ioutil"
 	"os"
-	"os/signal"
-	"syscall"
 	"text/template"
-	"time"
-
 	log "github.com/Sirupsen/logrus"
-	"github.com/uswitch/vault-creds/pkg/kube"
-	"github.com/uswitch/vault-creds/pkg/vault"
+	"github.com/subnova/vault-creds/pkg/vault"
 	"gopkg.in/alecthomas/kingpin.v2"
-	yaml "gopkg.in/yaml.v1"
+	"gopkg.in/yaml.v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-)
+	"github.com/hashicorp/vault/api"
+	"os/signal"
+	"syscall"
+	"time"
+	"github.com/subnova/vault-creds/pkg/kube"
+	"context"
+	)
 
 var (
 	vaultAddr           = kingpin.Flag("vault-addr", "Vault address, e.g. https://vault:8200").String()
@@ -36,7 +36,7 @@ var (
 
 	completedPath = kingpin.Flag("completed-path", "Path where a 'completion' file will be dropped").Default("/tmp/vault-creds/completed").String()
 	job           = kingpin.Flag("job", "Whether to run in cronjob mode").Default("false").Bool()
-	initMode      = kingpin.Flag("init", "write out credentials but do not renew").Default("false").Bool()
+	initMode      = kingpin.Flag("init", "Write out credentials but do not renew").Default("false").Bool()
 )
 
 var (
@@ -109,9 +109,9 @@ func main() {
 		log.Fatal("error creating client:", err)
 	}
 
-	credsProvider := vault.NewCredentialsProvider(client, *secretPath)
+	secretProvider := vault.NewSecretProvider(client, *secretPath)
 
-	var creds *vault.Credentials
+	var secret *api.Secret
 
 	// if there's already a lease, use that and don't generate new credentials
 	if leaseExist {
@@ -121,26 +121,31 @@ func main() {
 			log.Fatal("error reading lease:", err)
 		}
 
-		err = yaml.Unmarshal(bytes, &creds)
+		err = yaml.Unmarshal(bytes, &secret)
 		if err != nil {
-			log.Fatal("error unmarshalling lease")
+			log.Fatal("error un-marshalling lease")
 		}
 
 	} else {
-		creds, err = credsProvider.Fetch()
+		secret, err = secretProvider.Fetch()
 		if err != nil {
 			log.Fatal(err)
 		}
 	}
 
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		log.Fatalf("error creating kube client config: %s", err)
-	}
+	var config *rest.Config
+	var clientSet *kubernetes.Clientset
 
-	clientSet, err := createClientSet(config)
-	if err != nil {
-		log.Fatalf("error creating kube client: %s", err)
+	if *job {
+		config, err = rest.InClusterConfig()
+		if err != nil {
+			log.Fatalf("error creating kube client config: %s", err)
+		}
+
+		clientSet, err = createClientSet(config)
+		if err != nil {
+			log.Fatalf("error creating kube client: %s", err)
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -172,7 +177,7 @@ func main() {
 					cleanUp(leasePath, tokenPath)
 					log.Fatal("auth token could no longer be renewed")
 				}
-				err = leaseManager.RenewSecret(ctx, creds.Secret, *leaseDuration)
+				err = leaseManager.RenewSecret(ctx, secret, *leaseDuration)
 				if err != nil {
 					log.Errorf("error renewing db credentials: %s", err)
 				}
@@ -201,46 +206,51 @@ func main() {
 		}
 	}()
 
-	if *out != "" && !leaseExist {
+	if *out != "" {
 		file, err := os.OpenFile(*out, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0666)
 		if err != nil {
 			log.Fatal(err)
 		}
 		defer file.Close()
 
-		t.Execute(file, creds)
+		err = t.Execute(file, secret)
+		if err != nil {
+			log.Fatal(err)
+		}
 		log.Printf("wrote credentials to %s", file.Name())
 
-		//write out token
-		tokenBytes, err := yaml.Marshal(authSecret)
-		if err != nil {
-			log.Fatal(err)
+		if !leaseExist {
+			//write out token
+			tokenBytes, err := yaml.Marshal(authSecret)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			ioutil.WriteFile(tokenPath, tokenBytes, 0600)
+
+			log.Printf("wrote token to %s", tokenPath)
+
+			//write out full secret
+			b, err := yaml.Marshal(secret)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			ioutil.WriteFile(leasePath, b, 0600)
+
+			log.Printf("wrote lease to %s", leasePath)
 		}
+	} else {
+		t.Execute(os.Stdout, secret)
+	}
 
-		ioutil.WriteFile(tokenPath, tokenBytes, 0600)
-
-		log.Printf("wrote token to %s", tokenPath)
-
-		//write out full secret
-		bytes, err := yaml.Marshal(creds)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		ioutil.WriteFile(leasePath, bytes, 0600)
-
-		log.Printf("wrote lease to %s", leasePath)
-
-		if *initMode {
-			log.Infof("completed init")
-			c <- os.Interrupt
-		}
-	} else if !leaseExist {
-		t.Execute(os.Stdout, creds)
+	if *initMode {
+		log.Infof("completed init")
+		c <- os.Interrupt
 	}
 
 	<-c
-	if !*initMode {
+	if !*initMode || *out == "" {
 		leaseManager.RevokeSelf(ctx, authSecret.Auth.ClientToken)
 	}
 	log.Infof("shutting down")
